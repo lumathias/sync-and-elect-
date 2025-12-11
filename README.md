@@ -10,141 +10,118 @@
 
 **Instituição:** Universidade Federal do Rio Grande do Norte (UFRN)
 
----
+O sistema consiste em uma aplicação Python orquestrada via **Kubernetes**, projetada para rodar no **Google Cloud Shell**.
 
-Este projeto apresenta a implementação prática de algoritmos fundamentais de coordenação em sistemas distribuídos, desenvolvidos em **Python** com **Flask**. O sistema foi projetado para rodar tanto localmente quanto em ambientes orquestrados com **Kubernetes**.
 
-O projeto cobre três tópicos principais do Capítulo 5 (Coordenação) da disciplina de Sistemas Distribuídos: **Multicast com Ordenação Total**, **Exclusão Mútua Distribuída** e **Eleição de Líder**.
+## Algoritmos Implementados
 
-## Funcionalidades Implementadas
+1.  **Multicast com Ordenação Total (Total Order):**
+    * Utiliza *Relógios Lógicos de Lamport* e *Filas de Prioridade* para garantir que todos os nós processem mensagens na mesma ordem.
+    * Consistência garantida via mecanismo de ACKs de todos os processos.
 
-### 1. Multicast com Ordenação Total (Total Order Multicast)
-Utiliza **Relógios Lógicos de Lamport** para garantir que todas as mensagens sejam entregues na mesma ordem em todos os processos.
-- **Teoria:** As mensagens carregam um timestamp lógico. A entrega só ocorre quando a mensagem está no topo da fila de prioridade local e foi reconhecida (ACK) por todos os processos do grupo.
-- **Mecanismo:** Fila de prioridade (`heapq`) e contador de ACKs.
+2.  **Exclusão Mútua Distribuída:**
+    * Algoritmo de *Ricart-Agrawala*.
+    * Garante acesso exclusivo a uma Região Crítica sem necessidade de um coordenador central (ponto único de falha).
 
-### 2. Exclusão Mútua Distribuída (Algoritmo de Ricart-Agrawala)
-Implementação do algoritmo distribuído onde um processo precisa da permissão de todos os outros para acessar um recurso crítico.
-- **Teoria:** Baseada em relógios lógicos. Quando um processo quer acessar o recurso, envia um pedido com timestamp a todos. Se houver conflito, o processo com menor timestamp ganha prioridade (desempate pelo ID).
-- **Vantagem:** Evita ponto único de falha (diferente do algoritmo centralizado).
-
-### 3. Eleição de Líder (Algoritmo do Valentão / Bully)
-Algoritmo para eleger um coordenador quando o atual falha ou o sistema inicia.
-- **Teoria:** Assume-se que os processos têm identificadores únicos. O processo com o **maior identificador** sempre vence a eleição.
-- **Fluxo:** Um processo envia mensagem de eleição para todos com ID maior. Se ninguém responder, ele se torna o líder.
+3.  **Eleição de Líder:**
+    * Algoritmo do *Valentão (Bully)*.
+    * Elege o processo com maior ID como coordenador do sistema.
 
 ---
 
-## Tecnologias Utilizadas
+## Como Executar (Google Cloud Shell)
 
-- **Linguagem:** Python 3.9
-- **API:** Flask
-- **Containerização:** Docker
-- **Orquestração:** Kubernetes (StatefulSet)
-- **Ferramentas:** Minikube (Cluster Local), cURL (Testes de API)
+### 1. Inicializar o Ambiente
+No terminal do Cloud Shell, inicie o Minikube:
 
----
+```bash
+minikube start
+````
 
-## Executando Localmente (VS Code)
+### 2. Configurar o Docker
 
-Para testes rápidos sem necessidade de subir um cluster Kubernetes.
+Aponte o terminal para usar o Docker interno do Minikube (essencial para o Kubernetes enxergar a imagem):
 
-1. **Instale as dependências:**
-    ```bash
-     pip install -r requirements.txt
-    ````
+```bash
+eval $(minikube docker-env)
+```
 
-2.  **Inicie os 3 processos em terminais separados:**
+### 3. Construir a Aplicação
 
-    *Terminal 1:*
+Crie a imagem Docker localmente:
 
-    ```bash
-      python app.py 0   # Roda em localhost: 5000
-    ```
+```bash
+docker build -t distributed-app:latest .
+```
 
-    *Terminal 2:*
+### 4. Deploy no Kubernetes
 
-    ```bash
-      python app.py 1   # Roda em localhost: 5001
-    ```
+Aplique a configuração para criar os 3 pods (réplicas):
 
-    *Terminal 3:*
+```bash
+kubectl apply -f deployment.yaml
+```
 
-    ```bash
-      python app.py 2 # Roda em localhost:5002
-    ```
+Aguarde até que todos estejam com status `Running`:
+
+```bash
+kubectl get pods -w   # Pressione Ctrl+C para sair
+``` 
 
 -----
 
-## Executando no Kubernetes (Google Cloud Shell / Minikube)
+## Roteiro de Testes (Demonstração)
 
-1.  **Inicie o Minikube:**
+Abra o Cloud Shell para executar os comandos a seguir.
 
-    ```bash
-      minikube start
-    ```
+### Teste 1: Multicast (Ordenação Total)
 
-2.  **Configure o Docker e construa a imagem:**
-
-    ```bash
-      eval $(minikube docker-env)
-      docker build -t distributed-app: latest .
-    ```
-
-3.  **Faça o Deploy:**
-
-    ```bash
-      kubectl apply -f k8s/deployment.yaml
-    ```
-
-4.  **Verifique os Pods:**
-
-    ```bash
-      kubectl get pods -w   # Aguarde app-0, app-1 e app-2 estarem "Running"
-    ```
------
-
-## Testando a API (Exemplos de Uso)
-
-Você pode usar o `curl` (ou Postman) para interagir com o sistema.
-
-### Teste de Multicast (Ordenação Total)
-
-Envia uma mensagem para o Processo 0, que será replicada para 1 e 2.
+Envia uma mensagem para o Processo 0. Ela deve ser replicada para 1 e 2 e entregue ordenadamente.
 
 ```bash
-  # Local
-  curl -X POST -H "Content-Type: application/json" -d '{"msg": "Ola SD"}' http://localhost:5000/multicast/send
-  
-  # Kubernetes (executando de dentro do pod)
-  kubectl exec app-0 -- curl -X POST -H "Content-Type: application/json" -d '{"msg": "Ola K8s"}' http://localhost:5000/multicast/send
+kubectl exec app-0 -- curl -X POST -H "Content-Type: application/json" -d '{"msg": "Teste Cloud Shell"}' http://localhost:5000/multicast/send
 ```
 
-### Teste de Exclusão Mútua
-
-Solicita acesso à Região Crítica para o Processo 0.
+**Verificação:** Confira os logs de qualquer pod para ver a mensagem de entrega:
 
 ```bash
-  # Local
-  curl -X POST http://localhost:5000/mutex/request
-  
-  # Kubernetes
-  kubectl exec app-0 -- curl -X POST http://localhost:5000/mutex/request
+kubectl logs app-0
+kubectl logs app-1
+kubectl logs app-2
 ```
 
-### Teste de Eleição (Bully)
+### Teste 2: Exclusão Mútua (Ricart-Agrawala)
+
+O Processo 0 solicita acesso à Região Crítica.
+
+```bash
+kubectl exec app-0 -- curl -X POST http://localhost:5000/mutex/request
+```
+
+**Resultado nos logs:** Você verá "ENTROU na Seção Crítica", uma pausa de 3 segundos e "SAIU da Seção Crítica".
+
+### Teste 3: Eleição de Líder (Bully)
 
 Força o Processo 0 (menor ID) a iniciar uma eleição. O esperado é que o Processo 2 (maior ID) vença.
 
 ```bash
-  # Local
-  curl -X POST http://localhost:5000/election/start
-  
-  # Kubernetes
-  kubectl exec app-0 -- curl -X POST http://localhost:5000/election/start
+kubectl exec app-0 -- curl -X POST http://localhost:5000/election/start
+```
+
+**Verificação:**
+
+```bash
+kubectl exec app-0 -- curl http://localhost:5000/status    # O campo "coordinator" deve ser 2
 ```
 
 -----
+
+## Tecnologias
+
+  * **Python 3.9** (Flask, Threading, Heapq)
+  * **Kubernetes** (StatefulSet, Headless Service)
+  * **Minikube** (Ambiente local de K8s)
+  * **Docker**
 
 ## Referências
 
