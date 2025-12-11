@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-service
+spec:
+  clusterIP: None
+  selector:
+    app: distributed-sys
+  ports:
+    - port: 5000
+      targetPort: 5000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app
+spec:
+  serviceName: "app-service"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: distributed-sys
+  template:
+    metadata:
+      labels:
+        app: distributed-sys
+    spec:
+      containers:
+      - name: app
+        image: distributed-app:latest
+        imagePullPolicy: Never
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: K8S_ENV # Garante que o código saiba que está no K8s
+          value: "true"
