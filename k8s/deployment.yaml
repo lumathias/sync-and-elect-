@@ -32,5 +32,5 @@ spec:
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
-        - name: K8S_ENV # Garante que o código saiba que está no K8s
+        - name: K8S_ENV
           value: "true"
