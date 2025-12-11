@@ -8,11 +8,12 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# --- Configuração de Ambiente (Local vs Kubernetes) ---
+# Configuração de Ambiente 
+# Detecta se está rodando no Kubernetes
 IS_K8S = os.getenv('K8S_ENV', 'false').lower() == 'true'
 
 if IS_K8S:
-    # Configuração Kubernetes
+    # Configuração Kubernetes (Padrão Cloud Shell)
     HOSTNAME = os.getenv('HOSTNAME', 'app-0')
     PROCESS_ID = int(HOSTNAME.split('-')[-1])
     NUM_PROCESSES = 3
@@ -20,30 +21,28 @@ if IS_K8S:
     MY_PORT = 5000
     print(f"Rodando em modo KUBERNETES. ID: {PROCESS_ID}")
 else:
-    # Configuração Local (VS Code)
+    # Fallback para teste local simples 
     try:
         PROCESS_ID = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv('PROCESS_ID', 0))
     except ValueError:
         PROCESS_ID = 0
-        
     NUM_PROCESSES = 3
-    # Localmente, usamos portas diferentes para cada processo: 5000, 5001, 5002
     base_port = 5000
     PEERS = [f"localhost:{base_port + i}" for i in range(NUM_PROCESSES)]
     MY_PORT = base_port + PROCESS_ID
     print(f"Rodando em modo LOCAL. ID: {PROCESS_ID}, Porta: {MY_PORT}")
 
-# --- Estado Global ---
+# Estado Global
 clock_lock = threading.Lock()
 logical_clock = 0
 
 # Estado Task 1 (Total Order)
-msg_queue = [] # Heap de prioridade
-ack_counts = {} # { (timestamp, process_id): count }
+msg_queue = [] 
+ack_counts = {} 
 delivery_log = []
 
 # Estado Task 2 (Mutex)
-mutex_state = "RELEASED" # RELEASED, WANTED, HELD
+mutex_state = "RELEASED" 
 mutex_queue = []
 mutex_acks = 0
 
@@ -68,22 +67,19 @@ def update_clock(timestamp):
         return logical_clock
 
 def broadcast(endpoint, data):
-    """Envia mensagem para todos os peers."""
+    # Envia mensagem para todos os peers.
     for i, peer in enumerate(PEERS):
         if i == PROCESS_ID: continue
-        # Evita travar se um peer não estiver rodando localmente
         try:
             url = f"http://{peer}{endpoint}"
             requests.post(url, json=data, timeout=2)
-        except requests.exceptions.ConnectionError:
-            if not IS_K8S:
-                pass # Ignora erros de conexão locais para não sujar o log
-        except Exception as e:
-            print(f"Erro ao contatar {peer}: {e}")
+        except:
+            pass 
 
 # ==============================================================================
 # TAREFA 1: MULTICAST TOTAL ORDER
 # ==============================================================================
+# Implementação baseada em Relógios Lógicos de Lamport 
 
 @app.route('/multicast/send', methods=['POST'])
 def send_multicast():
@@ -105,26 +101,21 @@ def send_multicast():
 
 @app.route('/multicast/receive', methods=['POST'])
 def receive_multicast():
-    """Recebe mensagem de outro processo"""
     data = request.json
     handle_incoming_multicast(data)
     
-    # Envia ACK de volta (Broadcast do ACK)
-    # Simulando atraso se solicitado via query param ?delay=true
-    if request.args.get('delay') == 'true' and PROCESS_ID == 1: 
-        print("Simulando atraso no ACK...")
-        time.sleep(10)
+    # Simula atraso no Processo 1 se solicitado (Teste de consistência)
+    if request.args.get('delay') == 'true' and PROCESS_ID == 1:
+        time.sleep(5)
 
-    # Incrementa relógio ao receber
+    # Atualiza relógio lógico ao receber 
     ts = update_clock(data['ts'])
     
     ack_data = {'type': 'ACK', 'msg_ts': data['ts'], 'msg_sender': data['sender'], 'sender': PROCESS_ID, 'ts': ts}
     
-    # 1. Envia ACK para os outros
+    # Envia ACK para todos e contabiliza o próprio
     threading.Thread(target=broadcast, args=('/multicast/ack', ack_data)).start()
-
-    # 2. CORREÇÃO CRÍTICA: Contabiliza o MEU próprio ACK localmente
-    # Sem isso, eu fico esperando um voto que nunca chega (o meu)
+    
     target = (data['ts'], data['sender'])
     if target in ack_counts:
         ack_counts[target] += 1
@@ -133,7 +124,7 @@ def receive_multicast():
     return jsonify({"status": "received"})
 
 def handle_incoming_multicast(data):
-    # Ordenação na fila local
+    # Ordenação na fila de prioridade 
     entry = (data['ts'], data['sender'], data)
     if entry not in msg_queue:
         heapq.heappush(msg_queue, entry)
@@ -152,7 +143,7 @@ def receive_ack():
     return jsonify({"status": "ack_processed"})
 
 def check_delivery():
-    # Entrega se estiver no topo e tiver ACKs de todos
+    # Mensagens só são entregues após reconhecimento de todos
     while msg_queue:
         top_ts, top_sender, top_data = msg_queue[0]
         count = ack_counts.get((top_ts, top_sender), 0)
@@ -168,6 +159,7 @@ def check_delivery():
 # ==============================================================================
 # TAREFA 2: EXCLUSÃO MÚTUA (Ricart-Agrawala)
 # ==============================================================================
+# Baseado no Algoritmo Distribuído
 
 @app.route('/mutex/request', methods=['POST'])
 def mutex_request():
@@ -175,13 +167,12 @@ def mutex_request():
     mutex_state = "WANTED"
     mutex_acks = 1 
     
-    # Envia pedido a todos com timestamp
     ts = increment_clock()
     req_data = {'ts': ts, 'sender': PROCESS_ID}
     
     threading.Thread(target=broadcast, args=('/mutex/receive_req', req_data)).start()
     
-    # Espera OK de todos
+    # Aguarda permissão de todos
     while mutex_acks < NUM_PROCESSES:
         time.sleep(0.1)
     
@@ -195,7 +186,6 @@ def mutex_request():
 
 @app.route('/mutex/receive_req', methods=['POST'])
 def mutex_receive_req():
-    # Lógica de decisão
     data = request.json
     req_ts = data['ts']
     req_sender = data['sender']
@@ -204,10 +194,11 @@ def mutex_receive_req():
     my_ts = get_clock()
     reply = False
     
+    # Regras de decisão do Ricart-Agrawala
     if mutex_state == "HELD":
         reply = False
     elif mutex_state == "WANTED":
-        # Desempate pelo menor timestamp, depois pelo menor ID
+        # Desempate: Menor timestamp ganha, depois menor ID
         if (req_ts < my_ts) or (req_ts == my_ts and req_sender < PROCESS_ID):
              reply = True
         else:
@@ -218,20 +209,17 @@ def mutex_receive_req():
     if reply:
         send_mutex_reply(req_sender)
     else:
-        # Adiciona à fila se não responder agora
         mutex_queue.append(req_sender)
     
     return jsonify({"status": "processed"})
 
 def send_mutex_reply(target_id):
-    # Adapta a URL de resposta baseado se é local ou K8s
     if IS_K8S:
         host = f"app-{target_id}.app-service"
         port = 5000
     else:
         host = "localhost"
         port = 5000 + target_id
-        
     try:
         requests.post(f"http://{host}:{port}/mutex/reply_ok", json={'sender': PROCESS_ID})
     except: pass
@@ -245,14 +233,15 @@ def mutex_reply_ok():
 def mutex_release():
     global mutex_state
     mutex_state = "RELEASED"
-    # Responde a todos na fila
+    # Responde aos postergados
     while mutex_queue:
         requester = mutex_queue.pop(0)
         send_mutex_reply(requester)
 
 # ==============================================================================
-# TAREFA 3: ELEIÇÃO (Bully)
+# TAREFA 3: ELEIÇÃO (Valentão / Bully)
 # ==============================================================================
+# Implementação do Algoritmo do Valentão 
 
 @app.route('/election/start', methods=['POST'])
 def start_election():
@@ -260,7 +249,7 @@ def start_election():
     election_in_progress = True
     print(f"Process {PROCESS_ID} iniciou eleição.")
     
-    # Envia para IDs maiores
+    # Envia mensagem para processos de ID maior
     higher_processes = [p for p in range(NUM_PROCESSES) if p > PROCESS_ID]
     
     if not higher_processes:
@@ -275,7 +264,6 @@ def start_election():
         else:
             host = "localhost"
             port = 5000 + p
-
         try:
             r = requests.post(f"http://{host}:{port}/election/msg", json={'sender': PROCESS_ID}, timeout=1)
             if r.status_code == 200:
@@ -283,6 +271,7 @@ def start_election():
         except: pass
             
     if not answered:
+        # Se ninguém maior responder, eu ganho 
         become_coordinator()
     
     return jsonify({"status": "election_running"})
@@ -290,7 +279,6 @@ def start_election():
 @app.route('/election/msg', methods=['POST'])
 def receive_election_msg():
     sender = request.json['sender']
-    # Se recebe de ID menor, assume eleição
     if sender < PROCESS_ID:
         threading.Thread(target=start_election).start()
         return jsonify({"status": "OK"}), 200
@@ -310,7 +298,6 @@ def become_coordinator():
         else:
             host = "localhost"
             port = 5000 + i
-            
         try:
             requests.post(f"http://{host}:{port}/coordinator", json={'coord': PROCESS_ID})
         except: pass
@@ -320,7 +307,7 @@ def set_coordinator():
     global coordinator_id, election_in_progress
     coordinator_id = request.json['coord']
     election_in_progress = False
-    print(f"Novo coordenador: Process {coordinator_id}")
+    print(f"Novo coordenador reconhecido: Process {coordinator_id}")
     return jsonify({"status": "ok"})
 
 @app.route('/status', methods=['GET'])
@@ -334,5 +321,4 @@ def status():
     })
 
 if __name__ == '__main__':
-    # Roda na porta calculada (5000, 5001, 5002)
     app.run(host='0.0.0.0', port=MY_PORT)
