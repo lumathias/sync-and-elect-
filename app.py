@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Configuração de Ambiente 
+# --- Configuração de Ambiente ---
 # Detecta se está rodando no Kubernetes
 IS_K8S = os.getenv('K8S_ENV', 'false').lower() == 'true'
 
@@ -21,7 +21,7 @@ if IS_K8S:
     MY_PORT = 5000
     print(f"Rodando em modo KUBERNETES. ID: {PROCESS_ID}")
 else:
-    # Fallback para teste local simples 
+    # Fallback para teste local simples (se necessário)
     try:
         PROCESS_ID = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv('PROCESS_ID', 0))
     except ValueError:
@@ -32,7 +32,7 @@ else:
     MY_PORT = base_port + PROCESS_ID
     print(f"Rodando em modo LOCAL. ID: {PROCESS_ID}, Porta: {MY_PORT}")
 
-# Estado Global
+# --- Estado Global ---
 clock_lock = threading.Lock()
 logical_clock = 0
 
@@ -67,10 +67,11 @@ def update_clock(timestamp):
         return logical_clock
 
 def broadcast(endpoint, data):
-    # Envia mensagem para todos os peers.
+    """Envia mensagem para todos os peers."""
     for i, peer in enumerate(PEERS):
         if i == PROCESS_ID: continue
         try:
+            # Em K8s, usamos o nome do serviço DNS
             url = f"http://{peer}{endpoint}"
             requests.post(url, json=data, timeout=2)
         except:
@@ -79,13 +80,13 @@ def broadcast(endpoint, data):
 # ==============================================================================
 # TAREFA 1: MULTICAST TOTAL ORDER
 # ==============================================================================
-# Implementação baseada em Relógios Lógicos de Lamport 
+# Implementação c/ Relógios Lógicos de Lamport 
 
 @app.route('/multicast/send', methods=['POST'])
 def send_multicast():
     msg_content = request.json.get('msg', 'Hello')
     
-    # Mensagens transportam marca lógica de tempo
+    # transportam marca lógica de tempo 
     ts = increment_clock()
     msg_data = {
         'type': 'MULTICAST',
@@ -108,12 +109,12 @@ def receive_multicast():
     if request.args.get('delay') == 'true' and PROCESS_ID == 1:
         time.sleep(5)
 
-    # Atualiza relógio lógico ao receber 
+    # Atualiza relógio lógico ao receber
     ts = update_clock(data['ts'])
     
     ack_data = {'type': 'ACK', 'msg_ts': data['ts'], 'msg_sender': data['sender'], 'sender': PROCESS_ID, 'ts': ts}
     
-    # Envia ACK para todos e contabiliza o próprio
+    # Envia ACK para todos e contabiliza o próprio 
     threading.Thread(target=broadcast, args=('/multicast/ack', ack_data)).start()
     
     target = (data['ts'], data['sender'])
@@ -124,7 +125,7 @@ def receive_multicast():
     return jsonify({"status": "received"})
 
 def handle_incoming_multicast(data):
-    # Ordenação na fila de prioridade 
+    # Ordenação na fila de prioridade
     entry = (data['ts'], data['sender'], data)
     if entry not in msg_queue:
         heapq.heappush(msg_queue, entry)
@@ -159,7 +160,7 @@ def check_delivery():
 # ==============================================================================
 # TAREFA 2: EXCLUSÃO MÚTUA (Ricart-Agrawala)
 # ==============================================================================
-# Baseado no Algoritmo Distribuído
+# Algoritmo Distribuído
 
 @app.route('/mutex/request', methods=['POST'])
 def mutex_request():
@@ -172,7 +173,7 @@ def mutex_request():
     
     threading.Thread(target=broadcast, args=('/mutex/receive_req', req_data)).start()
     
-    # Aguarda permissão de todos
+    # Aguarda permissão de todos 
     while mutex_acks < NUM_PROCESSES:
         time.sleep(0.1)
     
@@ -194,7 +195,7 @@ def mutex_receive_req():
     my_ts = get_clock()
     reply = False
     
-    # Regras de decisão do Ricart-Agrawala
+    # Regras de decisão do Ricart-Agrawala 
     if mutex_state == "HELD":
         reply = False
     elif mutex_state == "WANTED":
@@ -241,7 +242,7 @@ def mutex_release():
 # ==============================================================================
 # TAREFA 3: ELEIÇÃO (Valentão / Bully)
 # ==============================================================================
-# Implementação do Algoritmo do Valentão 
+# Algoritmo do Valentão
 
 @app.route('/election/start', methods=['POST'])
 def start_election():
